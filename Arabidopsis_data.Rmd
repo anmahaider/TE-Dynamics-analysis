@@ -1,0 +1,571 @@
+---
+title: "Arabidopsis"
+output: rmarkdown::github_document
+date: "2024-08-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(umap)
+library(factoextra)
+library(corrr)
+library(xlsx)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(maps)
+library(leaflet)
+theme_set(theme_bw())
+```
+
+# Transposon family presence-absence polymorphims in Arabidopsis thaliana
+Short-read data was retrieved from ENA under the project number PRJNA273563. Long-read
+assemblies were retrieved from https://1001genomes.org/data/1001G+/releases/current/assemblies/.(Igolkina et al. 2024).
+Initial Repeatlibrary for A.thaliana retrieved from https://github.com/baduelp/public/tree/master/SPLITREADER/SPLITREADER_v1.3/TE_sequence (Baduel et al. 2021)
+
+## Identification of novel TE families with GenomeDelta
+Mapping of Col-0 short-reads (SRR1945757) to 27 long read-assemblies:
+
+```{bash}
+conda activate GenomeDelta
+
+for fasta in *.fasta; do base_name=$(basename "$fasta" .fa);file="$base_name";
+GenomeDelta --fq SRR1945757.fastq --fa "$fasta" --of GD_out/"$file" --prefix name --t 20;
+done
+```
+
+Filtering duplicate candidates between assemblies:
+
+````{bash}
+bash GD-iterator.sh path/to/GD-results_folder 1741.candidates.fasta path/to/output_folder
+````
+Removal of overlap with the Repeatlibrary by Baduel et al.
+Manual classification fo candidate Sequences with Conserved Domain Search (Wang J et al. 2023).
+
+## TE distribution landscape
+Preliminary copy-number estimation in the short reads of 1135 accessions with deviaTE.
+
+->Acquisition and preparation of short-read dataset
+```{bash}
+bash ena-file-download-read_run-PRJNA273563-fastq_ftp-20240704-1345.sh
+
+find . -name '*_1.fastq.gz' | parallel -j4 'n={}; n=${n%_1.fastq.gz}; gzip -cd {} ${n}_2.fastq.gz | gzip -c > path/to/folder/merged/${n}.fastq.gz'
+
+cd path/to/folder/merged
+````
+
+->mapping the short-reads to the merged Repeatlibrary
+```{bash}
+find . -name "*.fastq.gz" | parallel -j 4 'n={/.}; bwa bwasw -t 10 patch/to/Repeatlibrary/GDall+bad.fasta {} | samtools sort -@ 4 -m 3G - > path/to/folder/mapped/${n}.sort.bam'
+
+cd path/to/folder/mapped
+
+for i in *bam;do samtools index $i;done
+```
+
+->copy number estimation
+````{bash}
+samtools faidx path/to/Repeatlibrary/GDall+bad.fasta
+
+find . -name '*.bam'|parallel -j 30'n={/.}
+samtools view {}|python path/to/script/ara-mapstat-weight.py --sam - --fai /path/to/Repeatlibrary/GDall+bad.fasta.fai --min-mq 0 > path/to/outputfolder/${n}.deviate'
+
+cat *.deviate > sum_out.csv
+````
+
+### General load Overview
+
+```{r}
+#reading in metadata
+TAIR10<-read_csv(file="/Users/anna/A.thaliana/Metadata/1001metadata.txt")
+ENA<-read_tsv(file = "/Users/anna/A.thaliana/Metadata/Thaliana_readdata.txt")%>%
+  select(run_accession,library_name)%>%rename("AccessionID"=library_name)
+metadata<-merge.data.frame(TAIR10,ENA,col=AccessionID)%>%rename("ID"=run_accession)
+
+#reading in copy number estimation results
+fullfile_list <- list.files("/Users/anna/A.thaliana/27Genomes/RMall_out", pattern = "*\\.fastq\\.sort\\.deviate$", full.names = TRUE)
+# Initialize an empty data frame to store the results
+initdev_df <- data.frame()
+
+# Iterate through each file
+for (file_path in fullfile_list) {
+  # Read data from the current file
+  current_data <- read.delim(file_path,header=F)
+  
+  # Add the 'ID' column
+  current_data$ID <- gsub("/Users/anna/A.thaliana/27Genomes/RMall_out","", file_path)
+  current_data$ID <- gsub(".fastq.sort.deviate","", file_path)
+  # Append the current data to the result data frame
+  initdev_df <- rbind(initdev_df, current_data)
+}
+#clean up
+initdev_df$ID<-gsub("/Users/anna/A.thaliana/27Genomes/RMall_out","",initdev_df$ID)
+colnames(initdev_df)<-c("type","te","length","raw_count","norm_count","ID")
+initdev_df$ID<-gsub("/","",initdev_df$ID)
+
+allfai<-read.table("/Users/anna/A.thaliana/GDall+bad.fasta.fai",header=F)%>%
+  select(V1,V2)%>%filter(V2>=500)
+colnames(allfai)=c("te","length")
+
+tempdev_df<-merge.data.frame(allfai,initdev_df,col=te)
+revtes<-unique(tempdev_df%>%filter(str_detect(te,"rev"))%>%select(te))%>%mutate(Source="revGD")
+badtes<-unique(tempdev_df%>%filter(str_detect(te,"@"))%>%select(te))%>%mutate(Source="Baduel")
+GDtes<-unique(tempdev_df %>%filter(!grepl("@|rev", te))%>%select(te))%>%mutate(Source="GD")
+
+Sourcedb<-rbind(revtes,badtes,GDtes)%>%filter(!te%in%c("AGO1","MPK6","PHYB"))
+Sourcedb$te<-gsub("@.*","",Sourcedb$te)
+Sourcedb<-unique(Sourcedb)
+
+#cleaning up the dataframe
+ctempdev_df<-tempdev_df
+ctempdev_df$te<-gsub("@.*","",ctempdev_df$te)
+
+ctempdev<-ctempdev_df%>%mutate(norm_count=round(norm_count,2))%>%
+  group_by(te,ID)%>%summarize(sum_norm_count=sum(norm_count))%>%ungroup()%>%
+  group_by(ID)%>%mutate(load=sum(sum_norm_count>0.8))%>%ungroup()%>%
+  group_by(te)%>%mutate(present_in=sum(sum_norm_count>0.8))%>%
+  mutate(distbin=case_when(present_in>=0 & present_in<=113 ~ "0-10%",
+                           present_in>113 & present_in<=226 ~ "11-20%",
+                           present_in>226 & present_in<=339 ~ "21-30%",
+                           present_in>339 & present_in<=452 ~ "31-40%",
+                           present_in>452 & present_in<=565 ~ "41-50%",
+                           present_in>565 & present_in<=678 ~ "51-60%",
+                           present_in>678 & present_in<=791 ~ "61-70%",
+                           present_in>791 & present_in<=904 ~ "71-80%",
+                           present_in>904 & present_in<=1014 ~ "81-90%",
+                           present_in>1014 & present_in<=1134 ~ "91-99%",
+                           present_in==1135 ~ "100%"))
+ctempdev<-merge.data.frame(Sourcedb,ctempdev,col=te)
+
+#analysis of TE-load by accession + plot
+cdev=merge.data.frame(ctempdev,metadata,col="ID")%>%
+select(te,ID,load,AccessionID,NameID,Lat,Long,sum_norm_count,distbin,Source,present_in)%>%unique()
+
+cdev_dist<-cdev%>%select(-te)
+world_map <- map_data("world") %>% filter(region != "Antarctica")%>%filter(lat>=10 & lat <80 ,long<150&long>-130)
+ggplot()+geom_map(data = world_map, map = world_map, aes(x=long, y=lat, map_id = region), color = "white", fill = "cornsilk4", linewidth = 0)+
+  geom_point(data = cdev_dist,aes(x=Long,y=Lat,color=load,alpha=load))+
+  scale_color_gradientn(colours=c("cornflowerblue","yellow","darkred"))+
+  theme(axis.text = element_blank(),axis.title = element_blank(),axis.ticks = element_blank(),
+        legend.position = "right",panel.grid = element_blank(),panel.background = element_rect(fill="azure2"))+
+  guides(alpha="none")+
+  labs(color="present TE families",title = "TE family load")
+```
+
+### Examples of different degrees of patchiness
+
+```{r}
+
+#Uniformly distributed
+ONSEN<-subset.data.frame(cdev,cdev$te=="ATCOPIA78")
+Evade<-subset.data.frame(cdev,cdev$te=="ATCOPIA93")
+
+ggplot()+geom_map(data = world_map, map = world_map, aes(x=long, y=lat, map_id = region), color = "white", fill = "cornsilk4", linewidth = 0)+
+  geom_point(data = ONSEN,aes(x=Long,y=Lat,color=sum_norm_count,alpha=sum_norm_count),position = position_jitter(width = 1, height = 1))+
+  scale_color_gradientn(colours=c("grey","pink","magenta"))+
+  theme(axis.text = element_blank(),axis.title = element_blank(),axis.ticks = element_blank(),
+        legend.position = "right",panel.grid = element_blank(),panel.background = element_rect(fill="azure2"))+
+  guides(alpha="none")+
+  labs(color="copy number",title = "ONSEN")
+
+Evdplot<-ggplot()+geom_map(data = world_map, map = world_map, aes(x=long, y=lat, map_id = region), color = "white", fill = "cornsilk4", linewidth = 0)+
+  geom_point(data = Evade,aes(x=Long,y=Lat,color=sum_norm_count,alpha=sum_norm_count),position = position_jitter(width = 1, height = 1))+
+  scale_color_gradientn(colours=c("grey","pink","magenta"))+
+  theme(axis.text = element_blank(),axis.title = element_blank(),axis.ticks = element_blank(), legend.position = "right",
+        panel.grid = element_blank(),panel.background = element_rect(fill="azure2"))+
+  guides(alpha="none")+
+  labs(color="copy number",title = "Evade")
+ggsave(plot=Evdplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/Evdplot.png",width=14, height=8,dpi = 200)
+ggsave(plot=Evdplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/Evdplot.svg",width=14, height=8,dpi = 200)
+#Absent in 90%
+TAG1<-subset.data.frame(cdev,cdev$te=="TAG1")
+
+TAG1plot<-ggplot()+geom_map(data = world_map, map = world_map, aes(x=long, y=lat, map_id = region), color = "white", fill = "cornsilk4", linewidth = 0)+
+  geom_point(data = TAG1,aes(x=Long,y=Lat,color=sum_norm_count,alpha=sum_norm_count),position = position_jitter(width = 1, height = 1))+
+  scale_color_gradientn(colours=c("grey","pink","magenta"))+
+  theme(axis.text = element_blank(),axis.title = element_blank(),axis.ticks = element_blank(),
+        legend.position = "right",panel.grid = element_blank(),panel.background = element_rect(fill="azure2"))+
+  guides(alpha="none")+
+  labs(color="copy number",title = "TAG1")
+ggsave(plot=TAG1plot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/TAG1plot.png",width=14, height=8,dpi = 200)
+ggsave(plot=TAG1plot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/TAG1plot.svg",width=14, height=8,dpi = 200)
+```
+
+Repeatmasker with filtered Repeatlibrary:
+As the Library retrieved from Baduel et al. contained Sequences not representative of a TE-family,
+(eg. Sequence fragments,LTR-Sequences and Satellites) we decided to filter out entries with less than 500 bp length.This Library was then used to mask the 27 assemblies as well as 5 out-group genomes (A. arenosa-GCA_905216605.1,A.lyrata-GCA_000004255.1,C.bursa-pastoricum-GCA_036452645.1 and C.grandiflora-GCA_040086895.1) 
+
+```{bash}
+for i in *.fna; do Repeatmasker -pa 20 -no_is -s -nolow -dir path/to/output_folder/ -lib path/to/Repeatlibrary/GD_baduel_merged.fa "$filename";done 
+
+cd /path/to/output_folder
+cp *.ori.out path/to/work/directory
+cd path/to/work/directory
+
+for i in *.ori.out; do cat $i|python path/to/reader-rm.py|python path/to/rm-cleanup.py > $i.clean; done
+
+for i in *ori.out.clean; do awk '{print $0,FILENAME}' $i |perl -pe 's/\.fna\.ori\.out\.clean//'; done > merged.clean.sum
+
+python path/to/score-max.py --rm merged.clean.sum > maxscore.txt
+```
+
+
+Quality control of GenomeDelta candidates with Repeatmasker results:
+
+
+```{r}
+outgroupRM<-read_tsv(file="/Users/anna/A.thaliana/27Genomes/Magnoliopsida/27RM/maxscore.txt")
+outgroupRM$Species<-gsub(".fna","",outgroupRM$Species)
+outgroupRM$Species<-gsub(".scaffolds_corrected.v2.1.fasta","",outgroupRM$Species)
+outgroupRM$te<-gsub("@.*","",outgroupRM$te)
+outgroupRM_filt<-outgroupRM%>%group_by(te,Species)%>%summarise(maxScore=max(Score))
+RMplot<-merge.data.frame(cdev,outgroupRM_filt,col=te)%>%arrange(present_in)
+teorder<-unique(RMplot$te)
+RMplot$te<-factor(RMplot$te,levels = teorder)
+RMplot$Species<-factor(RMplot$Species,levels = c("testdrive.fasta","6909","10002",
+                                                 "10015","10024","1741",
+                                                 "22001","22002","22003",
+                                                 "22004","22005","22006","22007",
+                                                 "6024","6069","6124","6244",
+                                                 "6966","8236","9075","9537","9543",
+                                                 "9638","9728","9764","9888","9905",
+                                                 "9981","A.thaliana",
+                                                 "A.arenosa","A.lyrata","C.bursa-pastoricum",
+                                                "C.grandiflora"))
+
+GDnonTE<-read_tsv(file="/Users/anna/A.thaliana/GD_classification")%>%filter(status=="non-TE")
+
+srcRmplot<-merge.data.frame(Sourcedb,RMplot,col=te)
+srcRmplot$te<-factor(srcRmplot$te,levels = teorder)
+cleanRMplot<-srcRmplot%>%group_by(te)%>%mutate(hits=sum(maxScore>0.8))%>%filter(hits>1)%>%
+filter(!te%in%intersect(te,GDnonTE$te))
+
+finaldf<-merge.data.frame(cleanRMplot,Sourcedb,col=te)%>%select(-hits)
+write_tsv(finaldf,file = "/Users/anna/Desktop/Thaliana_stuff/filteredRM27.tsv")
+finaltes<-unique(finaldf$te)
+write_tsv(as.data.frame(finaltes),file="/Users/anna/Desktop/Thaliana_stuff/seqs4db_3cp.txt")
+
+finalGDtes<-finaldf%>%filter(!Source=="Baduel")%>%select(te)%>%unique()
+GDfalsepos<-cdev%>%filter(!Source=="Baduel")%>%filter(!te%in%finalGDtes$te)
+write_tsv(finalGDtes,file="/Users/anna/A.thaliana/27Genomes/filteredGDs.txt")
+
+
+rawRMpatchplot<-ggplot(srcRmplot,aes(x=te,y=maxScore,fill=distbin))+
+  geom_bar(stat="identity")+
+  facet_grid(rows = vars(Species))+
+  theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(),
+        strip.text.y.right = element_text(angle = 0))+
+  labs(title = "Repeatmasker score of TE families for 27 A.thaliana accessions and 5 outgroups:
+       Highlighted by Distribution")
+ggsave(plot=rawRMpatchplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/rawRMpatchplot.png",width=14, height=8,dpi = 200)
+ggsave(plot=rawRMpatchplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/rawRMpatchplot.svg",width=14, height=8,dpi = 200)
+
+rawRMSrcplot<-ggplot(srcRmplot,aes(x=te,y=maxScore,fill=Source))+
+  geom_bar(stat="identity")+
+  facet_grid(rows = vars(Species))+
+  theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(),
+        strip.text.y.right = element_text(angle = 0))+
+  labs(title = "Repeatmasker score of TE families for 27 A.thaliana accessions and 5 outgroups:
+       Highlighted by Source")
+ggsave(plot=rawRMSrcplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/rawRMSrcplot.png",width=14, height=8,dpi = 200)
+ggsave(plot=rawRMSrcplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/rawRMSrcplot.svg",width=14, height=8,dpi = 200)
+
+
+cleanRMpatchplot<-ggplot(cleanRMplot,aes(x=te,y=maxScore,fill=distbin))+
+  geom_bar(stat="identity")+
+  facet_grid(rows = vars(Species))+
+  theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(),
+        strip.text.y.right = element_text(angle = 0))+
+  labs(title = "Repeatmasker score of TE families for 27 A.thaliana accessions and 5 outgroups:
+       Highlighted by Distribution, filtered for families with at least one > 0.8 score entry")
+ggsave(plot=cleanRMpatchplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/cleanRMpatchplot.png",width=14, height=8,dpi = 200)
+ggsave(plot=cleanRMpatchplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/cleanRMpatchplot.svg",width=14, height=8,dpi = 200)
+
+
+cleanRMSrcplot<-ggplot(cleanRMplot,aes(x=te,y=maxScore,fill=Source))+
+  geom_bar(stat="identity")+
+  facet_grid(rows = vars(Species))+
+  theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(),
+        strip.text.y.right = element_text(angle = 0))+
+  labs(title = "Repeatmasker score of TE families for 27 A.thaliana accessions and 5 outgroups:
+       Highlighted by Source, filtered for families with at least one > 0.8 score entry")
+ggsave(plot=cleanRMSrcplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/cleanRMSrcplot.png",width=14, height=8,dpi = 200)
+ggsave(plot=cleanRMSrcplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/cleanRMSrcplot.svg",width=14, height=8,dpi = 200)
+
+```
+
+Visualization of families found by GenomeDelta:
+```{r}
+GD27fai_filtered<-read_tsv(file ="/Users/anna/A.thaliana/27Genomes/filteredGDs.fasta.fai",col_names = c("cluster","tot_len","x","x","z")) %>%
+  select(cluster, tot_len)%>%
+  separate(cluster,sep = "_",into = c("acc","clus","clusn","bias","insn"))%>%
+  mutate(cluster = paste0(acc, "_", clus, "_", clusn, "_", bias, "_", insn))%>%
+  select(cluster,acc)%>%
+  group_by(acc)%>%summarise(new_fams=n())%>%mutate(tot_fam=cumsum(new_fams))%>%
+  filter(!acc%in%c("rev6124","rev6244","rev9075"))
+
+GDcumulplot<-ggplot(GD27fai_filtered,aes(x=acc,y=tot_fam, label = new_fams))+
+  geom_line(aes(group=1),color="black")+
+  geom_point(color="forestgreen",size=3)+
+  theme_bw()+
+  theme(panel.grid = element_blank(),axis.text.x=element_text(angle = 90),axis.title = element_text(size = 13))+
+  geom_text(nudge_x = -0.3,vjust = -0.4)+
+  labs(x="accession",y="cumulative sum of new families")
+ggsave(plot=GDcumulplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/GDcumulplot.png",width=14, height=8,dpi = 200)
+ggsave(plot=GDcumulplot,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/GDcumulplot.svg",width=14, height=8,dpi = 200)
+```
+Load distribution after filtering for false positive GenomeDelta hits:
+```{r}
+ctempdev_final<-ctempdev_df%>%mutate(norm_count=round(norm_count,2))%>%
+  group_by(te,ID)%>%summarize(sum_norm_count=sum(norm_count))%>%
+  anti_join(GDfalsepos, by = "te")%>%ungroup()%>%
+  group_by(ID)%>%mutate(load=sum(sum_norm_count>0.8))%>%ungroup()%>%
+  group_by(te)%>%mutate(present_in=sum(sum_norm_count>0.8))%>%
+  mutate(distbin=case_when(present_in>=0 & present_in<=113 ~ "0-10%",
+                           present_in>113 & present_in<=226 ~ "11-20%",
+                           present_in>226 & present_in<=339 ~ "21-30%",
+                           present_in>339 & present_in<=452 ~ "31-40%",
+                           present_in>452 & present_in<=565 ~ "41-50%",
+                           present_in>565 & present_in<=678 ~ "51-60%",
+                           present_in>678 & present_in<=791 ~ "61-70%",
+                           present_in>791 & present_in<=904 ~ "71-80%",
+                           present_in>904 & present_in<=1014 ~ "81-90%",
+                           present_in>1014 & present_in<=1134 ~ "91-99%",
+                           present_in==1135 ~ "100%"))
+
+cdev_final<-merge.data.frame(ctempdev_final,metadata,col="ID")
+cdev_final<-merge.data.frame(cdev_final,Sourcedb,col=te)%>%
+select(te,ID,load,AccessionID,NameID,Lat,Long,sum_norm_count,distbin,Source,present_in)%>%unique()
+
+cdev_final_dist<-cdev_final%>%select(-te,-Source)
+
+finalmap<-ggplot()+geom_map(data = world_map, map = world_map, aes(x=long, y=lat, map_id = region), color = "white", fill = "cornsilk4", linewidth = 0)+
+  geom_point(data = cdev_final_dist,aes(x=Long,y=Lat,color=load,alpha=load))+
+  scale_color_gradientn(colours=c("cornflowerblue","yellow","darkred"))+
+  theme(axis.text = element_blank(),axis.title = element_blank(),axis.ticks = element_blank(),
+        legend.position = "right",panel.grid = element_blank(),panel.background = element_rect(fill="azure2"))+
+  guides(alpha="none")+
+  labs(color="present TE families",title = "TE family load")
+ggsave(plot=finalmap,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/finalmap.png",width=20, height=10,dpi = 200)
+ggsave(plot=finalmap,file="/Users/anna/Desktop/Thaliana_stuff/Figures2eb/finalmap.svg",width=20, height=10,dpi = 200)
+
+cdev_final_patch<-cdev_final%>%select(te,distbin,Source)%>%unique()
+cdev_final_patch$distbin<-factor(cdev_final_patch$distbin,
+                            levels = c("0-10%","11-20%","21-30%","31-40%",
+                                       "41-50%","51-60%","61-70%","71-80%",
+                                       "81-90%","91-99%","100%"),
+                            ordered = TRUE)
+ggplot(data =cdev_final_patch,aes(x=distbin,fill=Source))+
+  geom_bar()+
+  scale_fill_manual(values = c("maroon","forestgreen","lightgreen"))+
+  theme(panel.grid = element_blank(),panel.background = element_blank())+
+  labs(x="Family Distribution class",y="number of families in class")
+```
+
+Analysis of TE-Sequence divergence within accessions:
+```{bash}
+samtools faidx /path/to/TE-library.fasta
+```
+
+
+Extraction of hits with sequence similarity higher than 80%, length coverage over 50% and 3 hits total per family and accession. 
+````{r}
+RMall27<-read.table("/Users/anna/A.thaliana/27Genomes/RM_complete/merged.clean.sum",header=F)%>%select(-V1,-V2,-V9,-V10,-V11)%>%mutate(bpcov=(V6-V5))
+colnames(RMall27)=c("divergence","contig","start","end","strand","TE","sample","bpcov")
+RMall27$sample<-str_replace_all(RMall27$sample,"\\.fasta\\.ori\\.out\\.clean", "")
+allfai<-read.table("/Users/anna/A.thaliana/GDall+bad.fasta.fai",header=F)%>%select(V1,V2)
+colnames(allfai)=c("TE","length")
+
+RMall27_20_3<-merge.data.frame(RMall27,allfai,col="TE")%>%mutate(proplen=(bpcov/length))%>%
+  group_by(sample,TE)%>%filter(divergence<=20,proplen>0.5)%>%
+  mutate(copies = n())%>%arrange(desc(copies))%>% filter(copies>=3)
+
+for (s in unique(RM27_20_3$sample)) {
+  bed <- RM27_20_3 %>% filter(sample==s) %>% mutate(strand= ifelse(strand=="C", "-", "+")) %>% select(contig, start, end, TE, sample, strand) %>% ungroup()
+  for (t in unique(bed$TE)) {
+    bed_te <- bed %>% filter(TE==t)
+    path = paste0("/Users/anna/A.thaliana/27Genomes/SeqdivanaBad/", s, ".", t, ".bed")
+    write_tsv(bed_te, path, col_names =FALSE)
+  }
+}
+
+````
+
+```{bash}
+cd /path/to/bed/directory
+
+for i in *.bed; do base_name=$(basename "$i" .bed);
+bedtools getfasta -fi path/to/genomes/"$base_name".scaffolds_corrected.v2.1.fasta -bed "$i" -s -fo "$base_name".fa;
+done
+
+for fasta in *.fa; do muscle -in "$fasta" -out "${fasta%.fasta}_aligned.fasta"; done
+
+for file in *aligned.fasta;do python3.11 path/to/script/te-pairwise-divergence.py "${file}" comp.txt; done > compsum.txt
+```
+
+```{r}
+badcompsum<-read.table(file ="/Users/anna/A.thaliana/27Genomes/SeqdivanaBad/Allcompsum.txt",header=F)%>%
+  select(V1,V3)%>%separate(col=V1,into = c("accession","te","misc"))%>%
+  select(-misc)%>%rename(divergence="V3")
+GDcompsum<-read.table(file ="/Users/anna/A.thaliana/27Genomes/Seqdivana/Allcompsum.txt",header=F)%>%
+  select(V1,V3)%>%separate(col=V1,into = c("accession","clus1","clus2","clus3","clus4","clus5","misc"),sep="_")%>%
+  mutate(te=paste0(clus1,"_",clus2,"_",clus3,"_",clus4,"_",clus5))%>%select(accession,te,V3)%>%
+  rename(divergence="V3")
+GDcompsum$te<-gsub(".fa","",GDcompsum$te)
+revcompsum<-read.table(file ="/Users/anna/A.thaliana/27Genomes/Seqdivana_rev/revcompsum.txt",header=F)%>%
+  select(V1,V3)%>%separate(col=V1,into = c("accession","clus1","clus2","clus3","misc"),sep="\\.")%>%
+  mutate(te=paste0(clus1,".",clus2,".",clus3))%>%select(accession,te,V3)%>%
+  rename(divergence="V3")
+
+allcompsum<-rbind(badcompsum,GDcompsum,revcompsum)
+
+#only TEs found in the 27
+TEfamsum<-allcompsum%>%group_by(te)%>%summarize(mediandiv=median(divergence),stdev=sd(divergence))
+divdistplot_temp<-list(TEfamsum,cdev_final)%>%reduce(inner_join, by='te')
+#only confirmed TEs
+GDnonTE<-read_tsv(file="/Users/anna/A.thaliana/GD_classification")%>%filter(status=="non-TE")
+
+divdistplot<-divdistplot_temp%>%mutate(status=if_else(te%in%GDnonTE$te,"nonTE","TE"))%>%
+  filter(te %in% finaltes)
+
+medcndev<-cdev_final%>%group_by(te)%>%summarize(medCN=median(sum_norm_count))%>%
+  mutate(CNbin=case_when(medCN <= 1.5 ~ "~1",
+                         medCN > 1.5 & medCN <= 3.5 ~ "2-3",
+                         medCN > 3.5 & medCN <= 10.5 ~ "4-10",
+                         medCN > 10.5 & medCN <= 50.5 ~"11-50",
+                         medCN > 50.5 & medCN <= 150.5 ~"51-150",
+                         medCN > 150.5 ~">150"))
+medcndev$CNbin<-factor(medcndev$CNbin,levels = c("~1","2-3","4-10","11-50","51-150",">150"))
+
+CNdistplot<-merge.data.frame(divdistplot,medcndev,col=te)%>%select(te,mediandiv,present_in,Source,medCN,CNbin)%>%unique()
+
+ggplot(data=CNdistplot,aes(x=mediandiv,y=present_in,color=Source,size=log10(medCN),alpha=0.5))+
+  scale_color_manual(values = c("maroon","forestgreen","lightgreen"))+
+  geom_point()+
+  theme_bw()+
+  labs(title="Median sequence divergence of te families plotted against the presence distribution",
+       x="Median divergence", y="number of accessions with te")
+divdistplot$distbin<-factor(divdistplot$distbin,
+                            levels = c("0-10%","11-20%","21-30%","31-40%",
+                                       "41-50%","51-60%","61-70%","71-80%",
+                                       "81-90%","91-99%","100%"),
+                            ordered = TRUE)
+
+ggplot(data=divdistplot,aes(x=distbin,y=mediandiv))+
+  geom_boxplot()+
+  theme_bw()+
+  labs(title="Boxplot showing the Median sequence divergence within accessions for differently distributed te families ",
+       x="Distrbution bin", y="Median divergence")
+
+ggplot(data=CNdistplot,aes(x=CNbin,y=mediandiv))+
+  geom_boxplot()+
+  theme_bw()+
+  labs(title="Boxplot showing the Median sequence divergence within accessions for different copy number dimensions",
+       x="Copy number dimension", y="Median divergence")
+
+```
+
+PCA and UMAP for TE-family distribution and copy number variance across 1135 accessions.
+```{r}
+fullfile_list <- list.files("/Users/anna/A.thaliana/27Genomes/RMall_out", pattern = "*\\.fastq\\.sort\\.deviate$", full.names = TRUE)
+# Initialize an empty data frame to store the results
+initdev_df <- data.frame()
+
+# Iterate through each file
+for (file_path in fullfile_list) {
+  # Read data from the current file
+  current_data <- read.delim(file_path,header=F)
+  
+  # Add the 'ID' column
+  current_data$ID <- gsub("/Users/anna/A.thaliana/27Genomes/RMall_out","", file_path)
+  current_data$ID <- gsub(".fastq.sort.deviate","", file_path)
+  # Append the current data to the result data frame
+  initdev_df <- rbind(initdev_df, current_data)
+}
+#clean up
+initdev_df$ID<-gsub("/Users/anna/A.thaliana/27Genomes/RMall_out","",initdev_df$ID)
+write_tsv(initdev_df,"/Users/anna/A.thaliana/27Genomes/RMall_out/dev_df.txt")
+colnames(initdev_df)<-c("type","te","length","raw_count","norm_count","ID")
+initdev_df$ID<-gsub("/","",initdev_df$ID)
+
+tempdev_df<-initdev_df%>%filter(te%in%temp2$te)
+
+ctempdev_df<-tempdev_df
+ctempdev_df$te<-gsub("@.*","",ctempdev_df$te)
+ctempdev_df$norm_count<-round(ctempdev_df$norm_count,2)
+ctempdev2<-merge.data.frame(ctempdev_df,Sourcedb,col=te)%>%
+  group_by(ID,te,Source)%>%summarize(sum_norm_count=sum(norm_count))%>%
+  mutate(presence=ifelse(sum_norm_count>0.8,1,0))
+
+#pca
+pcadata_temp<-ctempdev2%>%select(-Source,-sum_norm_count)%>%dcast(ID~te,value.var = "presence")
+rownames(pcadata_temp)<-pcadata_temp$ID
+pcadata <- pcadata_temp %>% select(-ID)
+pca_matrix<-prcomp(pcadata)
+presence_loadings<-pca_matrix$rotation
+pca_df_temp<-as.data.frame(pca_matrix$x)%>%mutate(ID=rownames(pca_df_temp))
+pca_df<-merge.data.frame(pca_df_temp,metadata,col=ID)
+
+ggplot(pca_df,aes(x=PC1,y=PC2,color=AdMixGroup,shape=Geo_group))+
+  scale_shape_manual(values = 0:13)+
+  geom_point(size=3)+
+  theme_bw()+
+  labs(title = "PCA by presence",x="PC1 ~ 7.18%",y="PC2 ~ 5.23%")
+
+ggplot(pca_df,aes(x=PC2,y=PC3,color=AdMixGroup,shape=Geo_group))+
+  scale_shape_manual(values = 0:13)+
+  geom_point(size=3)+
+  theme_bw()+
+  labs(title = "PCA by presence",x="PC2 ~ 5.23%",y="PC3 ~ 2.59%")
+
+ggplot(pca_df,aes(x=PC3,y=PC4,color=AdMixGroup,shape=Geo_group))+
+  scale_shape_manual(values = 0:13)+
+  geom_point(size=3)+
+  theme_bw()+
+  labs(title = "PCA by presence",y="PC4 ~ 2.32%",x="PC3 ~ 2.59%")
+
+pcadata2<-ctempdev2%>%select(-Source,-presence)%>%dcast(ID~te,value.var = "sum_norm_count")
+rownames(pcadata2)<-pcadata2$ID
+pcadata2 <- pcadata2 %>% select(-ID)
+pca_matrix2<-prcomp(pcadata2,center = T,scale. = T)
+CN_loadings<-pca_matrix2$rotation
+pca_df_temp2<-as.data.frame(pca_matrix2$x)%>%mutate(ID=rownames(as.data.frame(pca_matrix2$x)))
+pca_df2<-merge.data.frame(pca_df_temp2,metadata,col=ID)
+
+
+ggplot(pca_df2,aes(x=PC1,y=PC2,color=AdMixGroup,shape=Geo_group))+
+  scale_shape_manual(values = 0:13)+
+  geom_point(size=3)+
+  theme_bw()+
+  labs(title = "PCA by copy number")
+
+#umap
+
+umappres<-umap(pcadata)
+umaplot_temp<-as.data.frame(umappres$layout)%>%mutate(ID=rownames(as.data.frame(umappres$layout)))
+umaplot<-merge.data.frame(umaplot_temp,metadata,col=ID)
+ggplot(umaplot,aes(x=V1,y=V2,color=AdMixGroup,shape=Geo_group))+
+  scale_shape_manual(values = 0:13)+
+  geom_point(size=3)+
+  theme_bw()+
+  labs(title = "Umap by presence")
+
+
+umappres2<-umap(pcadata2)
+umaplot_temp2<-as.data.frame(umappres2$layout)%>%mutate(ID=rownames(as.data.frame(umappres2$layout)))
+umaplot2<-merge.data.frame(umaplot_temp2,metadata,col=ID)
+ggplot(umaplot2,aes(x=V1,y=V2,color=AdMixGroup,shape=Geo_group))+
+  scale_shape_manual(values = 0:13)+
+  geom_point(size=3,alpha=0.75)+
+  theme_bw()+
+  labs(title = "Umap by copy number")
+```
+
+
+
+
+
+
