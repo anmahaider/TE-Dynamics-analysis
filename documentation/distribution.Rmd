@@ -1,0 +1,107 @@
+---
+title: "TE patchyness"
+output: rmarkdown::github_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+    author: Riccardo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(svglite))
+theme_set(theme_bw())
+```
+
+## File import
+
+Read metadata and copynumber estimates
+```{r}
+athaliana <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/A.thaliana.tsv") %>% mutate(species = "A. thaliana", silencing_spread="biparental") %>% mutate(families_present = load/284)
+dmelanogaster <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/D.melanogaster.tsv") %>% mutate(species = "D. melanogaster", silencing_spread="maternal")
+dsimulans <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/D.simulans.tsv") %>% mutate(species = "D. simulans", silencing_spread="maternal")
+dsechellia <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/D.sechellia.tsv") %>% mutate(species = "D. sechellia", silencing_spread="maternal")
+dyakuba <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/D.yakuba.tsv") %>% mutate(species = "D. yakuba", silencing_spread="maternal")
+
+(data <- bind_rows(athaliana, dmelanogaster, dsimulans, dsechellia, dyakuba) %>% arrange(families_present))
+
+(dist <- ggplot(data, aes(x = families_present, fill=silencing_spread)) + 
+  geom_histogram(binwidth = 0.01) +
+  scale_fill_manual(values = c("#999900","#A0A0A0")) +
+  facet_grid(species ~ ., scales = "free_y") + 
+  labs(y = "Samples", x = "Families Present", fill = "Silencing inheritance")+
+  theme(legend.position = "right"))
+```
+
+```{r}
+athaliana_te <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/A.thaliana.TEs.tsv") %>% mutate(species = "A. thaliana", silencing_spread="biparental", rarity = present_in/1135)
+dmelanogaster_te <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/D.melanogaster.TEs.tsv") %>% mutate(species = "D. melanogaster", silencing_spread="maternal")
+dsimulans_te <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/D.simulans.TEs.tsv") %>% mutate(species = "D. simulans", silencing_spread="maternal")
+dsechellia_te <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/D.sechellia.TEs.tsv") %>% mutate(species = "D. sechellia", silencing_spread="maternal")
+dyakuba_te <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/D.yakuba.TEs.tsv") %>% mutate(species = "D. yakuba", silencing_spread="maternal")
+
+(data_te <- bind_rows(athaliana_te, dmelanogaster_te, dsimulans_te, dsechellia_te, dyakuba_te))
+
+(dist_te <- ggplot(data_te, aes(x = rarity, fill=silencing_spread)) + 
+  geom_histogram(binwidth = 0.05) +
+  scale_fill_manual(values = c("#999900","#A0A0A0")) +
+  facet_grid(species ~ ., scales = "free_y") + 
+  labs(y = "TE families", x = "Rarity of TE family", fill = "Silencing inheritance")+
+  theme(legend.position = "right"))
+```
+
+```{}
+for i in /mnt/data2/riccardo/dmel-longreads-assemblies/*.fa; do ~/repeatannotation/RepeatMasker/RepeatMasker -pa 30 -no_is -s -nolow -dir RM-out/ -lib ref/dmel-TEs-update.fasta "$i"; done
+```
+
+```{r}
+athal_LR <- read_tsv("/Volumes/Storage/ara-droso/data-longreads/AthalRM.tsv") %>% mutate(s = "A. thaliana", silencing_spread="biparental")
+n_tes <- athal_LR %>% select(te) %>% distinct
+
+athal_sample <- athal_LR %>% group_by(s, Species, silencing_spread) %>% summarise(load = n()) %>% mutate(families_present = load/292, Species = as.character(Species))
+athal_TE <- athal_LR %>% select(s, te, present_in, silencing_spread) %>% distinct() %>% mutate(rarity = present_in/27)
+
+dmel_LR <- read_tsv("/Volumes/Storage/ara-droso/data-longreads/DmelRM.tsv") %>% mutate(s = "D. melanogaster", silencing_spread="maternal")
+n_tes <- dmel_LR %>% select(te) %>% distinct
+
+(dmel_sample <- dmel_LR %>% group_by(s, Species, silencing_spread) %>% summarise(load = n()) %>% mutate(families_present = load/125))
+(dmel_TE <- dmel_LR %>% select(s, te, present_in, silencing_spread) %>% distinct() %>% mutate(rarity = present_in/49))
+
+lr_data_sample <- bind_rows(athal_sample, dmel_sample)
+lr_data_te <- bind_rows(athal_TE, dmel_TE)
+
+
+(dist_LR <- ggplot(lr_data_sample, aes(x = families_present, fill=silencing_spread)) + 
+  geom_histogram(binwidth = 0.01) +
+  scale_fill_manual(values = c("#999900","#A0A0A0")) +
+  facet_grid(s ~ ., scales = "free_y") + 
+  labs(y = "Samples", x = "Families Present", fill = "Silencing inheritance", title = "Based on long-reads assemblies")+
+  theme(legend.position = "right")+
+  coord_cartesian(xlim = c(0,1)))
+
+(dist_te_LR <- ggplot(lr_data_te, aes(x = rarity, fill=silencing_spread)) + 
+  geom_histogram(binwidth = 0.05) +
+  scale_fill_manual(values = c("#999900","#A0A0A0")) +
+  facet_grid(s ~ ., scales = "free_y") + 
+  labs(y = "TE families", x = "Rarity of TE family", fill = "Silencing inheritance", title = "Based on long-reads assemblies")+
+  theme(legend.position = "right"))
+```
+
+
+
+## Export pictures
+
+```{r}
+ggsave("/Volumes/Storage/ara-droso/figures/family_load_distribution.png", dist, dpi = 600)
+ggsave("/Volumes/Storage/ara-droso/figures/rarity_distribution.png", dist_te, dpi = 600)
+
+ggsave("/Volumes/Storage/ara-droso/figures/LR_family_load_distribution.png", dist_LR, dpi = 600)
+ggsave("/Volumes/Storage/ara-droso/figures/LR_rarity_distribution.png", dist_te_LR, dpi = 600)
+```

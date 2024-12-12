@@ -1,0 +1,182 @@
+---
+title: "Dmel data processing"
+output: rmarkdown::github_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+    author: Riccardo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(svglite))
+theme_set(theme_bw())
+```
+
+## File import
+
+Read metadata and copynumber estimates
+```{r}
+metadata <- read_tsv("/Volumes/Storage/mining/GenomeDelta2.0/utilities/dmel-metadata.tsv")
+
+te_metadata <- read_tsv("/Volumes/Storage/ara-droso/te-metadata.tsv")
+
+(cn <- read_tsv("/Volumes/Storage/mining/GenomeDelta2.0/OUTPUT/dmel-validation/copynumber.tsv") %>%
+    mutate(sample = gsub("/Volumes/Storage/mining/GenomeDelta2.0/OUTPUT/dmel-validation/copynumber/", "", sample),sample = gsub(".fastq.sort.tsv", "", sample)) %>%
+    inner_join(metadata, by = "sample") %>%
+    filter(study_id != "Shpak2023", name %in% te_metadata$te, name!=c("Souslik","Transib1_new","MLE","Spoink")))
+```
+
+```{r}
+(patchyness_te <- cn %>%
+    mutate(presence = ifelse(copynumber > 0.3, "present", "absent")) %>%
+    group_by(name) %>%
+    summarise(present = sum(presence == "present"), absent = sum(presence == "absent")) %>%
+    mutate(rarity = (present/815)) %>%
+    arrange(rarity))
+
+(patchyness_sample <- cn %>%
+    mutate(presence = ifelse(copynumber > 0.3, "present", "absent")) %>%
+    group_by(sample) %>%
+    summarise(load = sum(presence == "present"), absent = sum(presence == "absent")) %>%
+    mutate(families_present = (load/129)) %>%
+    inner_join(metadata, by="sample") %>%
+    rename(ID=sample, Lat=lat, Long=lon) %>%
+    select(ID, load, families_present, Lat, Long))
+
+write_tsv(patchyness_te, "/Volumes/Storage/ara-droso/data-patchyness/D.melanogaster.TEs.tsv")
+write_tsv(patchyness_sample, "/Volumes/Storage/ara-droso/data-patchyness/D.melanogaster.tsv")
+```
+
+
+```{}
+# Define the folder containing the copynumber files
+folder_path <- "/Volumes/Storage/ara-droso/data-patchyness/dyak"
+
+columns <- c("type","name","len","raw","copynumber")
+
+# List all *.ori.out files in the folder
+file_list <- list.files(path = folder_path, pattern = "\\.tsv$", full.names = TRUE)
+
+# Iterate over each file in oriout_folder
+all_cn_data <- tibble(sample = character(), type = character(), name = character(), len = integer(), raw = integer(), copynumber = double())
+
+for (cn_file in file_list) {
+  cn <- read_tsv(cn_file, col_names = columns, skip = 6) %>% mutate(sample = cn_file)
+  print(cn_file)
+  all_cn_data <- bind_rows(all_cn_data, cn)
+  }
+  
+write_tsv(all_cn_data, "/Volumes/Storage/ara-droso/data-patchyness/dyak/copynumber.tsv")
+```
+
+
+
+
+```{r}
+(dsim <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/dsim/copynumber.tsv") %>%
+    mutate(sample = gsub("/Volumes/Storage/ara-droso/data-patchyness/dsim/", "", sample),sample = gsub(".fastq.sort.tsv", "", sample)) %>% filter(type=="te", !str_detect(name, "Unknown|Satellite|Simple_repeat|tRNA"), !(sample%in%c("ERR694696","ERR694699","ERR694698","ERR694696","ERR694700"))))
+
+(patchyness_te_sim <- dsim %>%
+    mutate(presence = ifelse(copynumber > 0.3, "present", "absent")) %>%
+    group_by(name) %>%
+    summarise(present = sum(presence == "present"), absent = sum(presence == "absent")) %>%
+    mutate(rarity = (present/89)) %>%
+    arrange(rarity))
+
+(patchyness_sample <- dsim %>%
+    mutate(presence = ifelse(copynumber > 0.3, "present", "absent")) %>%
+    group_by(sample) %>%
+    summarise(load = sum(presence == "present"), absent = sum(presence == "absent")) %>%
+    mutate(families_present = (load/154)) %>%
+    rename(ID=sample) %>%
+    select(ID, load, families_present))
+
+write_tsv(patchyness_sample, "/Volumes/Storage/ara-droso/data-patchyness/D.simulans.tsv")
+write_tsv(patchyness_te_sim, "/Volumes/Storage/ara-droso/data-patchyness/D.simulans.TEs.tsv")
+```
+
+```{r}
+(dsec <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/dsec/copynumber.tsv") %>%
+    mutate(sample = gsub("/Volumes/Storage/ara-droso/data-patchyness/dsec/", "", sample),sample = gsub(".fastq.sort.tsv", "", sample)) %>% filter(type=="te", !str_detect(name, "Unknown|Satellite|Simple_repeat|tRNA"), name!="rnd-4_family-4968#DNA/P"))
+
+(patchyness_te_sec <- dsec %>%
+    mutate(presence = ifelse(copynumber > 0.3, "present", "absent")) %>%
+    group_by(name) %>%
+    summarise(present = sum(presence == "present"), absent = sum(presence == "absent")) %>%
+    mutate(rarity = (present/45)) %>%
+    arrange(rarity))
+
+(patchyness_sample <- dsec %>%
+    mutate(presence = ifelse(copynumber > 0.3, "present", "absent")) %>%
+    group_by(sample) %>%
+    summarise(load = sum(presence == "present"), absent = sum(presence == "absent")) %>%
+    mutate(families_present = (load/160)) %>%
+    rename(ID=sample) %>%
+    select(ID, load, families_present))
+
+write_tsv(patchyness_sample, "/Volumes/Storage/ara-droso/data-patchyness/D.sechellia.tsv")
+write_tsv(patchyness_te_sec, "/Volumes/Storage/ara-droso/data-patchyness/D.sechellia.TEs.tsv")
+```
+
+```{r}
+(dyak <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/dyak/copynumber.tsv") %>%
+    mutate(sample = gsub("/Volumes/Storage/ara-droso/data-patchyness/dyak/", "", sample),sample = gsub(".fastq.sort.tsv", "", sample)) %>% filter(type=="te", !str_detect(name, "Unknown|Satellite|Simple_repeat|tRNA"), !(name %in% c("rnd-1_family-314#LTR/Gypsy","rnd-1_family-316#LTR/Gypsy","rnd-1_family-96#LTR/Gypsy","rnd-1_family-226#LTR/Gypsy"))))
+
+(patchyness_te_yak <- dyak %>%
+    mutate(presence = ifelse(copynumber > 0.3, "present", "absent")) %>%
+    group_by(name) %>%
+    summarise(present = sum(presence == "present"), absent = sum(presence == "absent")) %>%
+    mutate(rarity = (present/57)) %>%
+    arrange(rarity))
+
+(patchyness_sample <- dyak %>%
+    mutate(presence = ifelse(copynumber > 0.3, "present", "absent")) %>%
+    group_by(sample) %>%
+    summarise(load = sum(presence == "present"), absent = sum(presence == "absent")) %>%
+    mutate(families_present = (load/207)) %>%
+    rename(ID=sample) %>%
+    select(ID, load, families_present))
+
+write_tsv(patchyness_sample, "/Volumes/Storage/ara-droso/data-patchyness/D.yakuba.tsv")
+write_tsv(patchyness_te_yak, "/Volumes/Storage/ara-droso/data-patchyness/D.yakuba.TEs.tsv")
+```
+
+```{r}
+# Define the folder containing the *.ori.out files
+folder_path <- "/Volumes/Storage/ara-droso/data-longreads/dmel"
+
+columns <- c("SWscore", "pdiv", "pdel", "pins", "contig", "qstart", "qend", "qleft",  "strand", "te", "class", "position_in_repeat_begin", "position_in_repeat_end", "position_in_repeat_left", "ID")
+
+# List all *.ori.out files in the folder
+file_list <- list.files(path = folder_path, pattern = "\\.ori\\.out$", full.names = TRUE)
+
+# Iterate over each file in oriout_folder
+max_data <- tibble(Species = character(), te = character(), contig = character(), qstart = double(), qend = double(), strand = character(), SWscore = double(), pdiv = double())
+
+for (oriout_file in file_list) {
+  (oo <- read_table(oriout_file, col_names = columns) %>% mutate(Species = gsub(".ori.out", "", oriout_file), Species = gsub("/Volumes/Storage/ara-droso/data-longreads/dmel//", "", Species)) %>% select(Species, te, contig, qstart, qend, strand, SWscore, pdiv))
+  
+  max_data <- bind_rows(max_data, oo)
+  }
+  
+write_tsv(max_data, "/Volumes/Storage/ara-droso/data-longreads/dmel/DmelRM.tsv")
+```
+
+```{r}
+(dmel_tes <- read_tsv("/Volumes/Storage/ara-droso/te-metadata.tsv"))
+
+(dmel_LR <- read_tsv("/Volumes/Storage/ara-droso/data-longreads/dmel/DmelRM.tsv") %>% mutate(Species = gsub("/Volumes/Storage/ara-droso/data-longreads/dmel/", "", Species)) %>% group_by(te, Species) %>% filter(SWscore==max(SWscore)) %>% ungroup() %>% group_by(te) %>% mutate(score = SWscore/max(SWscore)) %>% filter(te %in% dmel_tes$te) %>% mutate(presence_absence = ifelse(score>0.5, "present", "absent")) %>% select(Species, te, presence_absence) %>% distinct() %>% group_by(te) %>% mutate(present_in = sum(presence_absence=="present")) %>% select(Species, te, present_in))
+
+write_tsv(dmel_LR, "/Volumes/Storage/ara-droso/data-longreads/DmelRM.tsv")
+```
+
+
+
