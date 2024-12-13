@@ -80,5 +80,33 @@ they are found in the Repeatlibrary corresponding to the new genes.
 
 - The threshold for a TE family to be present/absent is 0.8 estimated
   copies.
+- A copy is identified as at least 0.5 sequence coverage and 0.8
+  sequence identity in long read assembly analysis.
+- Only TE sequences longer than 500 bp are considered during the
+  analysis
 
 ## Copy number estimation in assemblies
+
+1.  Download long-read assemblies in fasta format
+
+2.  Run RepeatMasker on the assemblies with the TE reference library
+
+<!-- -->
+
+    cd /path/to/assemblies
+
+    for i in *.fna ; do RepeatMasker -pa 20 -no_is -s -nolow -dir path/to/output/directory -lib /path/to/library.fasta $i;done 
+
+3.  Clean up output data
+
+<!-- -->
+
+    cd /path/to/RepeatMasker/output/directory
+
+    for i in *.ori.out; do cat $i|reader-rm.py|rm-cleanup.py > $i.clean; done
+
+    for i in *ori.out.clean; do awk '{print $0,FILENAME}' $i |perl -pe 's/\.fna\.ori\.out\.clean//'; done > merged.clean.sum
+
+4.  Upload the data `merged.clean.sum` to the folder
+    “data/distributions” specifying the species. Add some metadata to
+    the Google Sheet file.
