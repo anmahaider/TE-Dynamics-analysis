@@ -1,0 +1,1 @@
+Rscript outputfolder2file.R --folder ../data-patchyness/D.suzukii --file ../data-patchyness/D.suzukii.raw.tsvecho -e "species\tsample\ttype\tname\tlen\traw\tcopynumber" > combined_raw.tsv && for file in *.raw.tsv; do species=$(basename "$file" .raw.tsv); awk -v species="$species" 'NR>1 {print species "\t" $0}' "$file"; done >> combined_raw.tsv
