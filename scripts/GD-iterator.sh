@@ -25,8 +25,8 @@ for file in "$input_folder"/*.fasta; do
     if [ "$filename" != "$starter_basename" ]; then
         # Call Rscript (replace with actual script and arguments)
         # Rscript path_to_script.R arg1 arg2 ...
-        Rscript "/Users/anna/A.thaliana/find_new_candidates.R" "${output_folder}/${filename}.blast.txt" "$output_folder/GD-final.fa.fai" "${file}.fai" "${output_folder}/${filename}.selected.txt"
-        python "/Users/anna/A.thaliana/filter-fasta.py" "${file}" "${output_folder}/${filename}.selected.txt" "${file}.selected.fa"
+        Rscript "find_new_candidates.R" "${output_folder}/${filename}.blast.txt" "$output_folder/GD-final.fa.fai" "${file}.fai" "${output_folder}/${filename}.selected.txt"
+        python "filter-fasta.py" "${file}" "${output_folder}/${filename}.selected.txt" "${file}.selected.fa"
         cat "${file}.selected.fa" >> "$output_folder/GD-final.fa"
         samtools faidx "$output_folder/GD-final.fa"
     fi
