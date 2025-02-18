@@ -21,7 +21,7 @@ strain, recently sampled,…).
     for fa_file in /assemblyfolder/*.fa; do
         base_name=$(basename "$fa_file" .fa)
         file="$base_name"
-        bash main.sh --fq short-reads.fastq.gz --fa "$fa_file" --of /path/to/output/"$file" --prefix outputname --t 20
+        GenomeDelta --fq short-reads.fastq.gz --fa "$fa_file" --of /path/to/output/"$file" --prefix outputname --t 20
     done
 
 2)  Run the GenomeDelta iterator script to get rid of duplicate
