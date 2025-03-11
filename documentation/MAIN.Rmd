@@ -1,0 +1,143 @@
+---
+title: "TE patchyness"
+output: rmarkdown::github_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+    author: Riccardo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(ggpubr))
+suppressPackageStartupMessages(library(svglite))
+theme_set(theme_bw())
+```
+
+## File import
+
+```{}
+Rscript outputfolder2file.R --folder ../data-patchyness/D.suzukii --file ../data-patchyness/D.suzukii.raw.tsv
+
+echo -e "species\tsample\ttype\tname\tlen\traw\tcopynumber" > combined_raw.tsv && for file in *.raw.tsv; do species=$(basename "$file" .raw.tsv); awk -v species="$species" 'NR>1 {print species "\t" $0}' "$file"; done >> combined_raw.tsv
+```
+
+Read metadata and copynumber estimates
+```{r}
+species_metadata <- read_tsv("/Volumes/Storage/ara-droso/metadata/species-metadata2.txt")
+dmel_metadata <- read_tsv("/Volumes/Storage/mining/GenomeDelta2.0/utilities/dmel-metadata.tsv")
+(data <- read_tsv("/Volumes/Storage/ara-droso/data-patchyness/selected/combined_raw.tsv") %>% inner_join(species_metadata, by="species") %>% mutate(sample = str_extract(sample, "[^/]+$")) %>% mutate(sample = gsub(".fastq.sort.deviate", "", sample)) %>% left_join(dmel_metadata, by="sample"))
+
+data %>% select(species) %>% distinct()
+```
+
+```{r}
+# Filtering our short TEs, unclassified TEs and other repeats. Defining "presence" and "absence" based on copynumber threshold of 0.7
+te_data <- data %>%
+  filter(
+    type == "te",
+    !str_detect(name, "Satellite|Simple_repeat|tRNA|Unknown|rRNA"),
+    is.na(study_id) | study_id %in% c("Chen2024", "Kapun2021"),
+    case_when(
+      TRUE ~ len > 500
+    )
+  ) %>%
+  mutate(presence = ifelse(copynumber > 0.7, "present", "absent"))
+
+# Identify TEs present in at least 1 sample
+tes_present_min1sample <- te_data %>% filter(presence == "present") %>% group_by(species, name) %>% summarise(n_samples = n()) %>% filter(n_samples>2) %>% distinct()
+
+# Filtering out low coverage samples and TEs missing from every sample
+te_present <- te_data %>% inner_join(tes_present_min1sample, by=c("species","name"))
+
+# Filtering out TEs present in copynumber around the threshold (false patchy)
+patchy_tes <- te_present %>% filter(presence=="absent") %>% select(name, species) %>% distinct()
+copy_patchy_tes <- te_present %>% inner_join(patchy_tes, by=c("name","species")) %>% group_by(species, name) %>% summarise(min = min(copynumber), max=max(copynumber), maxdiff = max-min) %>% arrange(desc(min))
+false_patchy <- copy_patchy_tes %>% filter(maxdiff<1)
+te_present <- te_present %>% filter(!(name %in% false_patchy$name))
+
+write_tsv(te_present, "/Volumes/Storage/ara-droso/data-other/te-all-data.tsv")
+```
+
+```{r}
+te_present <- read_tsv("/Volumes/Storage/ara-droso/data-other/te-all-data.tsv")
+selfin_info <- read_tsv("/Volumes/Storage/ara-droso/metadata/species-selfin-info.txt")
+
+#Summarise
+summarised <- te_present %>% group_by(species, recent_selfin_history, selfin_rate) %>% mutate(total_families = n_distinct(name)) %>% group_by(species, sample, study_id, total_families, kingdom, recent_selfin_history, selfin_rate) %>% summarise(present = sum(presence == "present"), absent = sum(presence == "absent")) %>% mutate(present_percentage = present/total_families) %>% inner_join(selfin_info, by = "species") %>% filter(kingdom == "Plantae")
+```
+
+```{r}
+order_species <- summarised %>% ungroup() %>% arrange(kingdom, selfin, species) %>% select(species) %>% distinct() %>% pull()
+
+te_present_filtered <- summarised %>% 
+  mutate(species = factor(species, levels = order_species), missing_tes = 1-present_percentage) %>% arrange(present_percentage) %>% filter(missing_tes < 0.3)
+
+(dist <- ggplot(te_present_filtered, aes(x = missing_tes, fill = kingdom, alpha = selfin)) + 
+  geom_histogram(binwidth = 0.008) +
+  #scale_fill_manual(values = c("orange","darkgreen")) +
+  scale_fill_manual(values = c("darkgreen")) +
+  scale_alpha_manual(values = c(0.4, 1)) +
+  facet_grid(species ~ ., scales = "free_y") + 
+  labs(y = "Samples", x = "Families absent", alpha = "Mostly selfin"))
+
+(dist_absolute <- ggplot(te_present_filtered, aes(x = absent, fill = kingdom, alpha = selfin)) + 
+  geom_histogram(binwidth = 1) +
+  #scale_fill_manual(values = c("orange","darkgreen")) +
+  scale_fill_manual(values = c("darkgreen")) +
+  scale_alpha_manual(values = c(0.4, 1)) +
+  facet_grid(species ~ ., scales = "free_y") + 
+  labs(y = "Samples", x = "Families Absent", alpha = "Mostly selfin"))
+```
+
+```{r}
+terarity <- te_present %>% inner_join(selfin_info, by = "species") %>% filter(kingdom == "Plantae") %>% group_by(name, species) %>% mutate(total_samples = n_distinct(sample)) %>% group_by(species, name, total_samples, kingdom, selfin) %>% summarise(present = sum(presence == "present"), absent = sum(presence == "absent"), copynumber = mean(copynumber[presence == "present"], na.rm = TRUE)) %>% mutate(present_percentage = present/total_samples, missing_percentage = 1- present_percentage) %>% arrange(desc(missing_percentage)) %>% mutate(species = factor(species, levels = order_species))
+
+(box_rarities <- ggplot(terarity, aes(y = 1-present_percentage, x = species, fill = kingdom, color = kingdom, alpha = selfin)) + 
+  geom_boxplot() +
+  #scale_fill_manual(values = c("orange","darkgreen")) +
+  #scale_color_manual(values = c("orange","darkgreen")) +
+  scale_fill_manual(values = c("darkgreen")) +
+  scale_color_manual(values = c("darkgreen")) +
+  scale_alpha_manual(values = c(0.4, 1)) +
+  labs(y = "Absent in", x = "", alpha = "Mostly selfin") + 
+  theme(axis.text.x = element_text(size = 10, face = "italic", angle = 90),
+        legend.position = "right"))
+
+terarity_filtered <- terarity %>% group_by(species, kingdom, selfin) %>% summarise(rare_count = sum(missing_percentage > 0.1))
+
+(te_count <- terarity %>% group_by(species, kingdom, selfin) %>% summarise(te_families = n()) %>% inner_join(terarity_filtered, by = c("species", "kingdom")))
+
+(hist_rarities <- ggplot(terarity_filtered, aes(x = species, y = rare_count, fill = kingdom, alpha = selfin)) + 
+  geom_bar(stat = "identity") +
+  #scale_fill_manual(values = c("orange","darkgreen")) +
+  scale_fill_manual(values = c("darkgreen")) +
+  scale_color_manual(values = c("darkgreen")) +
+  scale_alpha_manual(values = c(0.4, 1)) +
+  labs(y = "Rare TE families", x = "", title = "Count of TE families absent in >10% of the samples", alpha = "Mostly selfin") +
+  theme(axis.text.x = element_text(size = 10, face = "italic", angle = 90),
+        legend.position = "right"))
+```
+
+Rarity and copynumber
+```{r}
+ggplot(terarity, aes(x = missing_percentage, y = log10(copynumber)))+
+  geom_point(alpha = 0.3, aes(color = species))
+```
+
+
+
+## Export pictures
+
+```{r}
+ggsave("/Volumes/Storage/ara-droso/figures/absent-tes.png", dist, dpi = 600, height = 15)
+ggsave("/Volumes/Storage/ara-droso/figures/absent-tes-absolute.png", dist_absolute, dpi = 600, height = 15)
+ggsave("/Volumes/Storage/ara-droso/figures/te-rarity.png", box_rarities, dpi = 600)
+ggsave("/Volumes/Storage/ara-droso/figures/rare-tes-count.png", hist_rarities, dpi = 600)
+```
